@@ -74,11 +74,14 @@ if st.session_state.archivo_cargado is not None:
         if not df_critico_global.empty:
             st.warning(f"Se detectaron deudas vencidas críticas bajo los filtros seleccionados.")
             
-            vendedores_criticos = sorted(df_critico_global["Vendedor"].unique())
+            vendedores_criticos = ["Todos"] + sorted(df_critico_global["Vendedor"].unique())
             vendedor_sel = st.selectbox("Seleccione un Vendedor para descargar sus deudas mayores a 75 días:", vendedores_criticos)
             
             if vendedor_sel:
-                df_vend_critico = df_critico_global[df_critico_global["Vendedor"] == vendedor_sel]
+                if vendedor_sel == "Todos":
+                    df_vend_critico = df_critico_global
+                else:
+                    df_vend_critico = df_critico_global[df_critico_global["Vendedor"] == vendedor_sel]
                 
                 buf_critico = io.BytesIO()
                 with pd.ExcelWriter(buf_critico, engine="openpyxl") as writer:
@@ -101,15 +104,18 @@ if st.session_state.archivo_cargado is not None:
         # --- SECCIÓN 2: PERFORMANCE Y GRÁFICOS DINÁMICOS ---
         st.markdown("## 📊 Análisis Visual por Vendedor (Panel Catena)")
         
-        vendedores_todos = sorted(df_trabajo["Vendedor"].unique())
+        vendedores_todos = ["Todos"] + sorted(df_trabajo["Vendedor"].unique())
         if vendedores_todos:
             vendedor_grafico = st.selectbox("Seleccione el Vendedor que desea auditar:", vendedores_todos)
         else:
             vendedor_grafico = None
         
-        if vendedor_grafico:
+        if vendedor_grafico == "Todos":
+            df_v = df_trabajo
+        else:
             df_v = df_trabajo[df_trabajo["Vendedor"] == vendedor_grafico]
-            
+        
+        if not df_v.empty:
             # Agrupar los saldos totales por cada tramo de deudas
             resumen_tramos = df_v.groupby("Tramo Morosidad")["Saldo Deuda (Imp. Total)"].sum().reset_index()
             
@@ -214,7 +220,7 @@ if st.session_state.archivo_cargado is not None:
                 )
 
             else:
-                st.info(f"El vendedor {vendedor_grafico} no registra saldo de deudas con los filtros actuales.")
+                st.info(f"El vendedor seleccionado no registra saldo de deudas con los filtros actuales.")
                 
     except Exception as e:
         st.error(f"Ocurrió un error al procesar la planilla: {e}")
