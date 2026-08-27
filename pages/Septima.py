@@ -17,18 +17,18 @@ if "df_global_septima" not in st.session_state:
     st.session_state.df_global_septima = None
 
 # --- COMPONENTE DE CARGA (Persistente) ---
-archivo_subido = st.file_uploader("Adjunte la planilla consolidada (.xlsx)", type=["xlsx"], key="uploader_septima")
+archivo_subido = st.file_uploader("Adjunte la planilla consolidada (.xlsx)", type=["xlsx"])
 
 # Si el usuario sube un archivo nuevo, lo guardamos en el session_state
 if archivo_subido is not None:
-    st.session_state.archivo_cargado_septima = archivo_subido
+    st.session_state.archivo_cargado = archivo_subido
 
 # Usamos el archivo almacenado en la sesión (si existe)
-if st.session_state.archivo_cargado_septima is not None:
+if st.session_state.archivo_cargado is not None:
     try:
         # Si el DataFrame no está cargado en memoria, lo leemos
-        if st.session_state.df_global_septima is None:
-            df = pd.read_excel(st.session_state.archivo_cargado_septima, engine="openpyxl")
+        if st.session_state.df_global is None:
+            df = pd.read_excel(st.session_state.archivo_cargado, engine="openpyxl")
             df.columns = df.columns.astype(str).str.strip()
             
             # Validar columnas críticas
@@ -50,10 +50,10 @@ if st.session_state.archivo_cargado_septima is not None:
                 else: return "Más de 90 días"
                 
             df["Tramo Morosidad"] = df["Días de Atraso"].apply(asignar_tramo)
-            st.session_state.df_global_septima = df
+            st.session_state.df_global = df
 
         # Recuperamos el DataFrame desde la memoria de sesión
-        df = st.session_state.df_global_septima
+        df = st.session_state.df_global
 
         # --- FILTRO GENERAL POR RAZÓN SOCIAL (BARRA LATERAL) ---
         st.sidebar.markdown("---")
