@@ -54,7 +54,6 @@ if st.session_state.archivo_cargado is not None:
 
         # Recuperamos el DataFrame desde la memoria de sesión
         df = st.session_state.df_global
-
         # --- FILTRO GENERAL POR RAZÓN SOCIAL (BARRA LATERAL) ---
         st.sidebar.markdown("---")
         st.sidebar.subheader("🔎 Filtro Global - Panel Catena")
