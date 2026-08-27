@@ -10,20 +10,20 @@ st.set_page_config(page_title="Panel Séptima", page_icon="📈", layout="wide")
 st.title("📈 Panel Séptima - Control de Cuentas Corrientes y Morosidad")
 st.markdown("Cargue el archivo consolidado generado para analizar la performance de cobros por vendedor.")
 
-# --- INICIALIZAR SESSION STATE PARA PERSISTENCIA (AISLADO PARA SÉPTIMA) ---
+# --- INICIALIZAR SESSION STATE PARA PERSISTENCIA ---
 if "archivo_cargado_septima" not in st.session_state:
     st.session_state.archivo_cargado_septima = None
 if "df_global_septima" not in st.session_state:
     st.session_state.df_global_septima = None
 
 # --- COMPONENTE DE CARGA (Persistente) ---
-archivo_subido = st.file_uploader("Adjunte la planilla consolidada de Séptima (.xlsx)", type=["xlsx"], key="uploader_septima")
+archivo_subido = st.file_uploader("Adjunte la planilla consolidada (.xlsx)", type=["xlsx"], key="uploader_septima")
 
-# Si el usuario sube un archivo nuevo, lo guardamos en el session_state exclusivo
+# Si el usuario sube un archivo nuevo, lo guardamos en el session_state
 if archivo_subido is not None:
     st.session_state.archivo_cargado_septima = archivo_subido
 
-# Usamos el archivo almacenado en la sesión de Séptima (si existe)
+# Usamos el archivo almacenado en la sesión (si existe)
 if st.session_state.archivo_cargado_septima is not None:
     try:
         # Si el DataFrame no está cargado en memoria, lo leemos
@@ -59,7 +59,7 @@ if st.session_state.archivo_cargado_septima is not None:
         st.sidebar.markdown("---")
         st.sidebar.subheader("🔎 Filtro Global - Panel Séptima")
         lista_razon_social = sorted(df['Razon Social'].dropna().unique())
-        razon_social_global = st.sidebar.selectbox("Filtrar por Razón Social:", ["Todos"] + list(lista_razon_social), key="filtro_rs_septima")
+        razon_social_global = st.sidebar.selectbox("Filtrar por Razón Social:", ["Todos"] + list(lista_razon_social), key="razon_social_septima")
 
         # Aplicar el filtro global al dataframe principal
         if razon_social_global != "Todos":
@@ -74,14 +74,16 @@ if st.session_state.archivo_cargado_septima is not None:
         if not df_critico_global.empty:
             st.warning(f"Se detectaron deudas vencidas críticas bajo los filtros seleccionados.")
             
-            vendedores_criticos = ["Todos"] + sorted(df_critico_global["Vendedor"].unique())
-            vendedor_sel = st.selectbox("Seleccione un Vendedor para descargar sus deudas mayores a 75 días:", vendedores_criticos, key="sel_critico_septima")
+            vendedores_criticos = sorted(df_critico_global["Vendedor"].unique())
+            
+            if len(vendedores_criticos) == 1:
+                vendedor_sel = vendedores_criticos[0]
+                st.info(f"Vendedor crítico detectado: **{vendedor_sel}**")
+            else:
+                vendedor_sel = st.selectbox("Seleccione un Vendedor para descargar sus deudas mayores a 75 días:", vendedores_criticos, key="vend_critico_septima")
             
             if vendedor_sel:
-                if vendedor_sel == "Todos":
-                    df_vend_critico = df_critico_global
-                else:
-                    df_vend_critico = df_critico_global[df_critico_global["Vendedor"] == vendedor_sel]
+                df_vend_critico = df_critico_global[df_critico_global["Vendedor"] == vendedor_sel]
                 
                 buf_critico = io.BytesIO()
                 with pd.ExcelWriter(buf_critico, engine="openpyxl") as writer:
@@ -92,7 +94,7 @@ if st.session_state.archivo_cargado_septima is not None:
                     data=buf_critico.getvalue(),
                     file_name=f"Morosidad_75dias_{str(vendedor_sel).replace(' ', '_')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_critico_septima"
+                    key="btn_descarga_critica_septima"
                 )
                 
                 columnas_mostrar = [c for c in ["Cliente", "Razon Social", "Nro Comprobante", "Fecha Emisión", "Saldo Deuda (Imp. Total)", "Días de Atraso"] if c in df_vend_critico.columns]
@@ -105,18 +107,19 @@ if st.session_state.archivo_cargado_septima is not None:
         # --- SECCIÓN 2: PERFORMANCE Y GRÁFICOS DINÁMICOS ---
         st.markdown("## 📊 Análisis Visual por Vendedor (Panel Séptima)")
         
-        vendedores_todos = ["Todos"] + sorted(df_trabajo["Vendedor"].unique())
-        if vendedores_todos:
-            vendedor_grafico = st.selectbox("Seleccione el Vendedor que desea auditar:", vendedores_todos, key="sel_grafico_septima")
+        vendedores_todos = sorted(df_trabajo["Vendedor"].unique())
+        
+        if len(vendedores_todos) == 1:
+            vendedor_grafico = vendedores_todos[0]
+            st.info(f"Mostrando información exclusiva del vendedor detectado: **{vendedor_grafico}**")
+        elif vendedores_todos:
+            vendedor_grafico = st.selectbox("Seleccione el Vendedor que desea auditar:", vendedores_todos, key="vend_grafico_septima")
         else:
             vendedor_grafico = None
         
-        if vendedor_grafico == "Todos":
-            df_v = df_trabajo
-        else:
+        if vendedor_grafico:
             df_v = df_trabajo[df_trabajo["Vendedor"] == vendedor_grafico]
-        
-        if not df_v.empty:
+            
             # Agrupar los saldos totales por cada tramo de deudas
             resumen_tramos = df_v.groupby("Tramo Morosidad")["Saldo Deuda (Imp. Total)"].sum().reset_index()
             
@@ -188,13 +191,13 @@ if st.session_state.archivo_cargado_septima is not None:
                 output_dinamico_v = io.BytesIO()
                 with pd.ExcelWriter(output_dinamico_v, engine='openpyxl') as writer:
                     df_resumen_v.to_excel(writer, index=False, sheet_name=f"Matriz_{str(vendedor_grafico)[:10]}")
-                    
+                
                 st.download_button(
                     label=f"📥 Descargar Matriz Dinámica en Excel de {vendedor_grafico} (.XLSX)",
                     data=output_dinamico_v.getvalue(),
                     file_name=f"Matriz_Morosidad_{str(vendedor_grafico).replace(' ', '_')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_matriz_septima"
+                    key="btn_descarga_matriz_septima"
                 )
                 
                 st.dataframe(
@@ -222,7 +225,7 @@ if st.session_state.archivo_cargado_septima is not None:
                 )
 
             else:
-                st.info(f"El vendedor seleccionado no registra saldo de deudas con los filtros actuales.")
+                st.info(f"El vendedor {vendedor_grafico} no registra saldo de deudas con los filtros actuales.")
                 
     except Exception as e:
         st.error(f"Ocurrió un error al procesar la planilla: {e}")
