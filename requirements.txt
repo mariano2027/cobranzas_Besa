@@ -1,6 +1,7 @@
+dash
+dash-bootstrap-components
+dash-ag-grid
 pandas
 openpyxl
-pypdf
-pymupdf
-matplotlib
-streamlit
+plotly
+gunicorn
