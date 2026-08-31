@@ -245,4 +245,3 @@ if st.session_state['df_final'] is not None:
     st.dataframe(df_final, use_container_width=True, hide_index=True)
 else:
     st.info("Por favor, cargue la base de clientes (Excel de 3 columnas) y el PDF de cuenta corriente en el panel izquierdo.")
-  
