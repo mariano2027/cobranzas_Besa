@@ -1,230 +1,248 @@
 import io
 import os
-import streamlit as st
+import re
+from datetime import datetime
 import pandas as pd
-import matplotlib.pyplot as plt
+from pypdf import PdfReader
+import streamlit as st
 
-# Configuración de la página web
-st.set_page_config(page_title="Panel Catena", page_icon="📈", layout="wide")
+# Configuración básica de pantalla plana
+st.set_page_config(page_title="Procesador Contable", page_icon="📊", layout="wide")
 
-st.title("📈 Panel Catena - Control de Cuentas Corrientes y Morosidad")
-st.markdown("Cargue el archivo consolidado generado para analizar la performance de cobros por vendedor.")
+st.title("📊 Panel de Control de Cuentas Corrientes")
+st.markdown("Cargue los archivos para cruzar clientes y descargar el informe general por vendedor.")
 
-# --- INICIALIZAR SESSION STATE PARA PERSISTENCIA ---
-if "archivo_cargado" not in st.session_state:
-    st.session_state.archivo_cargado = None
-if "df_global" not in st.session_state:
-    st.session_state.df_global = None
+def extraer_datos_pdf_final(pdf_file):
+    """Parsea el PDF capturando comprobantes, importes, localidad, límite de crédito y días en calle."""
+    datos_comprobantes = []
+    patron_cliente = re.compile(r"Cliente\s+([A-Z0-9]+)")
+    patron_cuit = re.compile(r"Nro\.\s+CUIT\s+([\d-]+)")
+    patron_localidad = re.compile(r"Localidad\s+(.*?)(?:\s{2,}|Provincia|$)", re.IGNORECASE)
+    patron_fecha = re.compile(r"(\d{2}/\d{2}/\d{2,4})")
+    
+    patron_credito = re.compile(r"(?:Cr[eé]dito|L[ií]mite)\s*[:]?\s*\$?\s*([\d\.,]+)", re.IGNORECASE)
 
-# --- COMPONENTE DE CARGA (Persistente) ---
-archivo_subido = st.file_uploader("Adjunte la planilla consolidada (.xlsx)", type=["xlsx"])
+    reader = PdfReader(pdf_file)
+    fecha_actual_sistema = datetime.now()
 
-# Si el usuario sube un archivo nuevo, lo guardamos en el session_state
-if archivo_subido is not None:
-    st.session_state.archivo_cargado = archivo_subido
+    cliente_actual = None
+    cuit_actual = None
+    localidad_actual = "SIN LOCALIDAD"
+    credito_actual = 0.0
+    dias_calle_actual = 0.0
+    capturar_siguiente_dias_calle = False
 
-# Usamos el archivo almacenado en la sesión (si existe)
-if st.session_state.archivo_cargado is not None:
-    try:
-        # Si el DataFrame no está cargado en memoria, lo leemos
-        if st.session_state.df_global is None:
-            df = pd.read_excel(st.session_state.archivo_cargado, engine="openpyxl")
-            df.columns = df.columns.astype(str).str.strip()
-            
-            # Validar columnas críticas
-            columnas_necesarias = ["Vendedor", "Saldo Deuda (Imp. Total)", "Días de Atraso", "Cliente", "Razon Social"]
-            for col in columnas_necesarias:
-                if col not in df.columns:
-                    st.error(f"❌ Falta la columna obligatoria '{col}' en el archivo subido.")
-                    st.stop()
-                    
-            # Asegurar tipos de datos correctos para cálculos matemáticos
-            df["Saldo Deuda (Imp. Total)"] = pd.to_numeric(df["Saldo Deuda (Imp. Total)"], errors="coerce").fillna(0.0)
-            df["Días de Atraso"] = pd.to_numeric(df["Días de Atraso"], errors="coerce").fillna(0).astype(int)
-            
-            # --- CLASIFICACIÓN ESTRICTA DE TRAMOS DE MOROSIDAD ---
-            def asignar_tramo(dias):
-                if dias <= 60: return "Menos de 60 días"
-                elif 61 <= dias <= 75: return "61 a 75 días"
-                elif 76 <= dias <= 90: return "76 a 90 días"
-                else: return "Más de 90 días"
-                
-            df["Tramo Morosidad"] = df["Días de Atraso"].apply(asignar_tramo)
-            st.session_state.df_global = df
+    for num_pagina, pagina in enumerate(reader.pages, start=1):
+        texto = pagina.extract_text()
+        if not texto:
+            continue
 
-        # Recuperamos el DataFrame desde la memoria de sesión
-        df = st.session_state.df_global
-        # --- FILTRO GENERAL POR RAZÓN SOCIAL (BARRA LATERAL) ---
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("🔎 Filtro Global - Panel Catena")
-        lista_razon_social = sorted(df['Razon Social'].dropna().unique())
-        razon_social_global = st.sidebar.selectbox("Filtrar por Razón Social:", ["Todos"] + list(lista_razon_social))
+        lineas = texto.split("\n")
+        for idx, linea in enumerate(lineas):
+            linea_strip = linea.strip()
 
-        # Aplicar el filtro global al dataframe principal
-        if razon_social_global != "Todos":
-            df_trabajo = df[df['Razon Social'] == razon_social_global]
-        else:
-            df_trabajo = df
+            if "Proyección" in linea_strip:
+                continue
 
-        # --- SECCIÓN 1: ALERTAS Y DESCARGAS > 75 DÍAS ---
-        st.markdown("## 🚨 Alertas de Morosidad Crítica (> 75 Días)")
-        df_critico_global = df_trabajo[df_trabajo["Días de Atraso"] > 75]
-        
-        if not df_critico_global.empty:
-            st.warning(f"Se detectaron deudas vencidas críticas bajo los filtros seleccionados.")
-            
-            vendedores_criticos = sorted(df_critico_global["Vendedor"].unique())
-            
-            if len(vendedores_criticos) == 1:
-                vendedor_sel = vendedores_criticos[0]
-                st.info(f"Vendedor crítico detectado: **{vendedor_sel}**")
-            else:
-                vendedor_sel = st.selectbox("Seleccione un Vendedor para descargar sus deudas mayores a 75 días:", vendedores_criticos)
-            
-            if vendedor_sel:
-                df_vend_critico = df_critico_global[df_critico_global["Vendedor"] == vendedor_sel]
-                
-                buf_critico = io.BytesIO()
-                with pd.ExcelWriter(buf_critico, engine="openpyxl") as writer:
-                    df_vend_critico.to_excel(writer, index=False, sheet_name="Morosidad_Critica")
-                    
-                st.download_button(
-                    label=f"📥 Descargar Excel Morosos >75 días - {vendedor_sel}",
-                    data=buf_critico.getvalue(),
-                    file_name=f"Morosidad_75dias_{str(vendedor_sel).replace(' ', '_')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                
-                columnas_mostrar = [c for c in ["Cliente", "Razon Social", "Nro Comprobante", "Fecha Emisión", "Saldo Deuda (Imp. Total)", "Días de Atraso"] if c in df_vend_critico.columns]
-                st.dataframe(df_vend_critico[columnas_mostrar], use_container_width=True, hide_index=True)
-        else:
-            st.success("✅ ¡Excelente! No se detectaron deudas mayores a 75 días bajo los filtros actuales.")
+            if "Cliente" in linea_strip and not "Desde" in linea_strip and not "Hasta" in linea_strip:
+                match_cli = patron_cliente.search(linea_strip)
+                if match_cli:
+                    cliente_actual = match_cli.group(1).strip().upper()
+                continue
 
-        st.markdown("---")
+            if "Nro. CUIT" in linea_strip:
+                match_cuit = patron_cuit.search(linea_strip)
+                if match_cuit:
+                    cuit_actual = match_cuit.group(1).strip()
+                continue
 
-        # --- SECCIÓN 2: PERFORMANCE Y GRÁFICOS DINÁMICOS ---
-        st.markdown("## 📊 Análisis Visual por Vendedor (Panel Catena)")
-        
-        vendedores_todos = sorted(df_trabajo["Vendedor"].unique())
-        
-        if len(vendedores_todos) == 1:
-            vendedor_grafico = vendedores_todos[0]
-            st.info(f"Mostrando información exclusiva del vendedor detectado: **{vendedor_grafico}**")
-        elif vendedores_todos:
-            vendedor_grafico = st.selectbox("Seleccione el Vendedor que desea auditar:", vendedores_todos)
-        else:
-            vendedor_grafico = None
-        
-        if vendedor_grafico:
-            df_v = df_trabajo[df_trabajo["Vendedor"] == vendedor_grafico]
-            
-            # Agrupar los saldos totales por cada tramo de deudas
-            resumen_tramos = df_v.groupby("Tramo Morosidad")["Saldo Deuda (Imp. Total)"].sum().reset_index()
-            
-            todos_tramos = ["Menos de 60 días", "61 a 75 días", "76 a 90 días", "Más de 90 días"]
-            saldos_fijos = []
-            
-            for tramo in todos_tramos:
-                match = resumen_tramos[resumen_tramos["Tramo Morosidad"] == tramo]
-                if not match.empty:
-                    saldos_fijos.append(float(match["Saldo Deuda (Imp. Total)"].iloc[0]))
+            # Captura de Localidad del PDF
+            if "Localidad" in linea_strip:
+                match_loc = patron_localidad.search(linea_strip)
+                if match_loc:
+                    localidad_actual = match_loc.group(1).strip().upper()
                 else:
-                    saldos_fijos.append(0.0)
+                    partes_loc = linea_strip.split("Localidad")
+                    if len(partes_loc) > 1 and partes_loc[1].strip():
+                        localidad_actual = partes_loc[1].split("Provincia")[0].strip().upper()
+                continue
+
+            # Captura de Límite de Crédito (se mantiene intacta tal como estaba)
+            match_cred = patron_credito.search(linea_strip)
+            if match_cred:
+                aux_cred = match_cred.group(1).replace(",", "")
+                try:
+                    credito_actual = float(aux_cred)
+                except:
+                    pass
+                continue
+
+            # Captura flexible de Días en Calle
+            if "dias en calle" in linea_strip.lower():
+                capturar_siguiente_dias_calle = True
+                continue
+
+            if capturar_siguiente_dias_calle:
+                partes_linea = linea_strip.split()
+                if partes_linea:
+                    candidatos_floats = []
+                    for p in partes_linea:
+                        p_clean = p.replace(",", "")
+                        try:
+                            val = float(p_clean)
+                            candidatos_floats.append(val)
+                        except:
+                            pass
+                    if candidatos_floats:
+                        dias_calle_actual = candidatos_floats[-1]
+                capturar_siguiente_dias_calle = False
+                continue
+
+            # Patrón flexible para comprobantes
+            match_comp = re.search(r"([A-Z]-\d{4}[-_\s]\w+)", linea_strip)
+            fechas_encontradas = patron_fecha.findall(linea_strip)
+
+            if match_comp and fechas_encontradas and cliente_actual:
+                comprobante = match_comp.group(0)
+                fecha_comprobante_str = str(fechas_encontradas[0]).strip()
+
+                tipo_comprobante = "Factura"
+                es_credito = False
+                if "NC" in linea_strip or "Nota de Credito" in linea_strip:
+                    tipo_comprobante = "Nota de Crédito"
+                    es_credito = True
+                elif "RC" in linea_strip or "Recibo" in linea_strip:
+                    tipo_comprobante = "Recibo"
+                    es_credito = True
+                elif "ND" in linea_strip or "Nota de Debito" in linea_strip:
+                    tipo_comprobante = "Nota de Débito"
+
+                partes = linea_strip.split()
+                montos_candidatos = []
+                
+                for p in partes:
+                    p_clean = "".join([c for c in p if c.isdigit() or c in [".", ",", "-", "(", ")"]]).strip()
+                    if p_clean and any(char.isdigit() for char in p_clean):
+                        if "/" not in p_clean and p_clean != comprobante and ("." in p_clean or "," in p_clean):
+                            montos_candidatos.append(p_clean)
+
+                def limpiar_monto_contable_americano(cadena_monto):
+                    if not cadena_monto: return 0.0
+                    aux = str(cadena_monto).replace(",", "")
+                    if "(" in aux or ")" in aux:
+                        aux = "-" + aux.replace("(", "").replace(")", "")
+                    try: return float(aux)
+                    except: return 0.0
+
+                importe_original = 0.0
+                saldo_remanente = 0.0
+
+                if len(montos_candidatos) >= 2:
+                    importe_original = limpiar_monto_contable_americano(montos_candidatos[-1])
+                    saldo_remanente = limpiar_monto_contable_americano(montos_candidatos[0])
+                elif len(montos_candidatos) == 1:
+                    importe_original = limpiar_monto_contable_americano(montos_candidatos[0])
+                    saldo_remanente = importe_original
+
+                if es_credito:
+                    if importe_original > 0: importe_original = -importe_original
+                    if saldo_remanente > 0: saldo_remanente = -saldo_remanente
+
+                dias_atraso = 0
+                if saldo_remanente > 0:
+                    try:
+                        componentes = fecha_comprobante_str.split("/")
+                        formato_anio = "%y" if len(componentes[-1]) == 2 else "%Y"
+                        fecha_comp_dt = datetime.strptime(fecha_comprobante_str, f"%d/%m/{formato_anio}")
+                        diferencia = fecha_actual_sistema - fecha_comp_dt
+                        dias_atraso = max(0, diferencia.days)
+                    except:
+                        dias_atraso = 0
+
+                datos_comprobantes.append(
+                    {
+                        "Cliente_PDF": cliente_actual,
+                        "Tipo Comprobante": tipo_comprobante,
+                        "Nro Comprobante": comprobante,
+                        "Fecha Emisión": fecha_comprobante_str,
+                        "Importe Original": importe_original,
+                        "Saldo Deuda (Imp. Total)": saldo_remanente,
+                        "Días de Atraso": dias_atraso,
+                        "Localidad": localidad_actual,
+                        "Limite Credito": credito_actual,
+                        "Dias en Calle": dias_calle_actual,
+                        "Pagina PDF": num_pagina,
+                    }
+                )
+                
+            if "Saldo Final" in linea_strip:
+                cliente_actual = None
+                cuit_actual = None
+                localidad_actual = "SIN LOCALIDAD"
+                credito_actual = 0.0
+                dias_calle_actual = 0.0
+                capturar_siguiente_dias_calle = False
+                
+    return pd.DataFrame(datos_comprobantes)
+
+# --- BARRA LATERAL GLOBAL ---
+st.sidebar.header("📁 Cargar Documentos")
+excel_subido = st.sidebar.file_uploader("1. Base maestra de Clientes (.xlsx)", type=["xlsx"])
+pdf_subido = st.sidebar.file_uploader("2. Listado de Cuenta Corriente (.pdf)", type=["pdf"])
+
+if 'df_final' not in st.session_state:
+    st.session_state['df_final'] = None
+
+if excel_subido and pdf_subido and st.session_state['df_final'] is None:
+    with st.spinner("Cruzando datos en limpio..."):
+        try:
+            df_excel = pd.read_excel(excel_subido, engine="openpyxl")
+            df_excel.columns = df_excel.columns.astype(str).str.strip()
             
-            total_vendedor = sum(saldos_fijos)
+            df_excel["Cliente_Clean"] = df_excel["Cliente"].astype(str).str.strip().str.upper()
+            df_maestro = df_excel[["Cliente_Clean", "Razon Social", "VENDEDOR"]].drop_duplicates()
+
+            df_pdf = extraer_datos_pdf_final(pdf_subido)
+            df_res = pd.merge(df_pdf, df_maestro, left_on="Cliente_PDF", right_on="Cliente_Clean", how="left")
             
-            if total_vendedor > 0:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown(f"#### Resumen de Performance de Cobros: **{vendedor_grafico}**")
-                    df_tabla_ver = pd.DataFrame({
-                        "Tramo de Vencimiento": todos_tramos,
-                        "Monto Total": saldos_fijos,
-                        "Porcentaje": [(s / total_vendedor) * 100 for s in saldos_fijos]
-                    })
-                    st.dataframe(df_tabla_ver.style.format({"Monto Total": "${:,.2f}", "Porcentaje": "{:.1f}%"}), use_container_width=True, hide_index=True)
-                    st.metric(label="Total Cuenta Corriente Asignada", value=f"${total_vendedor:,.2f}")
-                
-                with col2:
-                    fig, ax = plt.subplots(figsize=(5, 5))
-                    colores_tramos = ["#2F855A", "#ECC94B", "#DD6B20", "#C53030"] # Verde, Amarillo, Naranja, Rojo
-                    
-                    labels_filtrados = [todos_tramos[i] for i in range(4) if saldos_fijos[i] > 0]
-                    saldos_filtrados = [saldos_fijos[i] for i in range(4) if saldos_fijos[i] > 0]
-                    colores_filtrados = [colores_tramos[i] for i in range(4) if saldos_fijos[i] > 0]
-                    
-                    ax.pie(
-                        saldos_filtrados, 
-                        labels=labels_filtrados, 
-                        autopct='%1.1f%%', 
-                        startangle=90, 
-                        colors=colores_filtrados,
-                        textprops={'fontsize': 10, 'weight': 'bold'}
-                    )
-                    ax.axis('equal')
-                    st.pyplot(fig)
+            # Parche explícito de control para Valyva
+            es_valyva = df_res["Cliente_PDF"].str.contains("8604405", na=False) | df_res["Cliente_PDF"].str.contains("860440S", na=False)
+            df_res.loc[es_valyva, "VENDEDOR"] = "Claudio"
+            df_res.loc[es_valyva, "Razon Social"] = "VALYVA MERCADOS INTEGRADOS SA"
+            
+            df_res["Razon Social"] = df_res["Razon Social"].fillna("Cliente Nuevo No Encontrado")
+            df_res["VENDEDOR"] = df_res["VENDEDOR"].fillna("Sin Vendedor Asignado")
+            df_res["Cliente"] = df_res["Cliente_PDF"]
+            
+            df_final_render = df_res[[
+                "Cliente", "Razon Social", "Localidad", "Tipo Comprobante", "Nro Comprobante", 
+                "Fecha Emisión", "Importe Original", "Saldo Deuda (Imp. Total)", 
+                "Días de Atraso", "Limite Credito", "Dias en Calle", "VENDEDOR", "Pagina PDF"
+            ]].rename(columns={"VENDEDOR": "Vendedor"})
+            
+            st.session_state['df_final'] = df_final_render
+        except Exception as e:
+            st.error(f"Error al cruzar los archivos: {e}")
 
-                # --- MATRIZ DINÁMICA DE SALDOS Y CLIENTES ---
-                st.markdown(f"### 📌 Matriz Dinámica de Saldos y Clientes - Vendedor: {vendedor_grafico}")
-                
-                df_dinamico_v = df_v.copy()
-                
-                df_dinamico_v["Menos de 60 Días"] = df_dinamico_v.apply(lambda r: r["Saldo Deuda (Imp. Total)"] if r["Días de Atraso"] <= 60 else 0.0, axis=1)
-                df_dinamico_v["61-75 Días"] = df_dinamico_v.apply(lambda r: r["Saldo Deuda (Imp. Total)"] if 61 <= r["Días de Atraso"] <= 75 else 0.0, axis=1)
-                df_dinamico_v["76-90 Días"] = df_dinamico_v.apply(lambda r: r["Saldo Deuda (Imp. Total)"] if 76 <= r["Días de Atraso"] <= 90 else 0.0, axis=1)
-                df_dinamico_v["Mayor a 90 Días"] = df_dinamico_v.apply(lambda r: r["Saldo Deuda (Imp. Total)"] if r["Días de Atraso"] > 90 else 0.0, axis=1)
-                
-                df_resumen_v = df_dinamico_v.groupby(["Cliente", "Razon Social"]).agg({
-                    "Menos de 60 Días": "sum",
-                    "61-75 Días": "sum",
-                    "76-90 Días": "sum",
-                    "Mayor a 90 Días": "sum",
-                    "Saldo Deuda (Imp. Total)": "sum"
-                }).reset_index()
-                
-                df_resumen_v = df_resumen_v.sort_values(by=["Saldo Deuda (Imp. Total)"], ascending=False)
-                df_resumen_v.columns = ["Código Cliente", "Razón Social", "Menos de 60 Días", "61-75 Días", "76-90 Días", "Mayor a 90 Días", "Total General"]
-                
-                output_dinamico_v = io.BytesIO()
-                with pd.ExcelWriter(output_dinamico_v, engine='openpyxl') as writer:
-                    df_resumen_v.to_excel(writer, index=False, sheet_name=f"Matriz_{str(vendedor_grafico)[:10]}")
-                
-                st.download_button(
-                    label=f"📥 Descargar Matriz Dinámica en Excel de {vendedor_grafico} (.XLSX)",
-                    data=output_dinamico_v.getvalue(),
-                    file_name=f"Matriz_Morosidad_{str(vendedor_grafico).replace(' ', '_')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                
-                st.dataframe(
-                    df_resumen_v.style.format({
-                        "Menos de 60 Días": "${:,.2f}",
-                        "61-75 Días": "${:,.2f}",
-                        "76-90 Días": "${:,.2f}",
-                        "Mayor a 90 Días": "${:,.2f}",
-                        "Total General": "${:,.2f}"
-                    }).background_gradient(subset=["Total General", "Mayor a 90 Días"], cmap="Reds"),
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-                # --- DETALLE DE COMPROBANTES INDIVIDUALES ---
-                st.markdown(f"### 📄 Detalle de Comprobantes Individuales")
-                cols_detalle = [c for c in ["Cliente", "Razon Social", "Tipo Comprobante", "Nro Comprobante", "Fecha Emisión", "Importe Original", "Saldo Deuda (Imp. Total)", "Días de Atraso", "Tramo Morosidad"] if c in df_v.columns]
-                st.dataframe(
-                    df_v[cols_detalle].style.format({
-                        "Importe Original": "${:,.2f}",
-                        "Saldo Deuda (Imp. Total)": "${:,.2f}"
-                    }),
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-            else:
-                st.info(f"El vendedor {vendedor_grafico} no registra saldo de deudas con los filtros actuales.")
-                
-    except Exception as e:
-        st.error(f"Ocurrió un error al procesar la planilla: {e}")
+# --- PANTALLA PRINCIPAL DIRECTA Y LIMPIA ---
+if st.session_state['df_final'] is not None:
+    df_final = st.session_state['df_final']
+    st.success(f"✅ ¡Proceso completado con éxito! Se unificaron los registros comerciales.")
+    
+    output_completo = io.BytesIO()
+    with pd.ExcelWriter(output_completo, engine='openpyxl') as writer:
+        df_final.to_excel(writer, index=False, sheet_name="General")
+        
+    st.download_button(
+        label="📥 Descargar Excel con Clientes Asignados (.XLSX)", 
+        data=output_completo.getvalue(), 
+        file_name="Cuentas_Corrientes_Vendedores.xlsx", 
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    
+    st.markdown("---")
+    st.markdown("**Vista previa rápida de los datos cruzados:**")
+    st.dataframe(df_final, use_container_width=True, hide_index=True)
 else:
-    st.info("A la espera del archivo Excel unificado para desplegar las métricas del Panel Catena.")
+    st.info("Por favor, cargue la base de clientes (Excel de 3 columnas) y el PDF de cuenta corriente en el panel izquierdo.")
+  
